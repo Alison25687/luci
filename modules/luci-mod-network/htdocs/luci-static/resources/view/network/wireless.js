@@ -147,6 +147,7 @@ function render_network_status(radioNet) {
 	const bssid = radioNet.getActiveBSSID();
 	const channel = radioNet.getChannel();
 	const disabled = (radioNet.get('disabled') == '1' || uci.get('wireless', radioNet.getWifiDeviceName(), 'disabled') == '1');
+	const notes = radioNet.get('notes');
 	const is_assoc = (bssid && bssid != '00:00:00:00:00:00' && channel && mode != 'Unknown' && !disabled);
 	const is_mesh = (radioNet.getMode() == 'mesh');
 	const changecount = count_changes(radioNet.getName());
@@ -161,6 +162,8 @@ function render_network_status(radioNet) {
 		status_text = E('em', disabled ? _('Wireless is disabled') : _('Wireless is not associated'));
 
 	return L.itemlist(E('div'), [
+		'', null,
+		_('Notes'),       notes,	
 		is_mesh ? _('Mesh ID') : _('SSID'), (is_mesh ? radioNet.getMeshID() : radioNet.getSSID()) ?? '?',
 		_('Mode'),       mode,
 		_('BSSID'),      (!changecount && is_assoc) ? bssid : null,
@@ -273,6 +276,29 @@ function network_updown(id, map, ev) {
 		ui.changes.apply();
 	});
 }
+
+function change_mac(id, ev) {
+	var radio = uci.get('wireless', id, 'device'),
+		disabled = (uci.get('wireless', id, 'disabled') == '1') ||
+		(uci.get('wireless', radio, 'disabled') == '1');
+
+	var wifiname = uci.get('wireless', id, 'ssid');
+	var args = ['/etc/config/scp/ch_mac.sh', ':', id ];
+
+	if (disabled || (id == 'all')) {
+		return fs.exec('sh', args).then(function(res) {
+			var psout = document.querySelector('.pseudo-output');
+			psout.style.display = '';
+			dom.content(psout, E('pre', [ res.stdout || '', res.stderr || '' ]));
+		}).catch(function(err) {
+			ui.addNotification(null, E('p', [ err ]))
+		});
+	} else {
+		ui.addNotification(null, E('p', {}, _('First, Please disable network') + ' "' + wifiname + '"'));
+		return '';
+	}
+}
+
 
 function next_free_sid(offset) {
 	let sid = 'wifinet' + offset;
@@ -968,6 +994,10 @@ return view.extend({
 				const isDisabled = (inst.get('disabled') == '1' ||
 					uci.get('wireless', inst.getWifiDeviceName(), 'disabled') == '1');
 
+				if (isDisabled && (uci.get('wireless', section_id, 'mode') == 'sta')) {
+					var isPseudo = (uci.get('network', 'globals', 'Pseudo') == '1');
+				}
+
 				btns = [
 					E('button', {
 						'class': 'cbi-button cbi-button-neutral enable-disable',
@@ -983,7 +1013,13 @@ return view.extend({
 						'class': 'cbi-button cbi-button-negative remove',
 						'title': _('Delete this network'),
 						'click': ui.createHandlerFn(this, 'handleRemove', section_id)
-					}, _('Remove'))
+					}, _('Remove')),
+					E('button', {
+						'class': 'cbi-button cbi-button-neutral',
+						'style': isPseudo ? '' : 'display:none',
+						'title': _('Change MAC and Hostname'),
+						'click': ui.createHandlerFn(this, change_mac, section_id)
+					}, _('Pseudo'))					
 				];
 			}
 
@@ -1157,6 +1193,28 @@ return view.extend({
 
 						return Promise.all(tasks);
 					}, this));
+				};
+
+				o = ss.taboption('general', form.TextValue, 'notes', _('<abbr title="Optional, notes about this wifinet">Notes</abbr>'));
+				o.optional = true;
+				o.rows = 3;
+				o.cols = 36;
+				o.monospace = true;
+				o.validate = function(section_id, value) {
+					if (value && value.length > 36)
+						return _('Maximum length is %d characters').format(36);
+
+					return true;
+				};
+				o.renderWidget = function(section_id, option_index, cfgvalue) {
+					const node = form.TextValue.prototype.renderWidget.apply(this, arguments);
+					const ta = node.querySelector('textarea');
+					if (ta)
+						ta.setAttribute('maxlength', '36');
+						ta.style.whiteSpace = 'pre-wrap';
+						ta.style.overflowWrap = 'break-word';
+
+					return node;
 				};
 
 				let encr;
@@ -2683,7 +2741,29 @@ return view.extend({
 
 			cbi_update_table(table, [], E('em', { 'class': 'spinning' }, _('Collecting data...')));
 
-			return E([ nodes, E('div', { 'class': 'cbi-section' }, [
+			var isPseudo = (uci.get('network', 'globals', 'Pseudo') == '1');
+
+			var psbtns = E('div', {'style': isPseudo ? 'padding-right:0px' : 'display:none' },
+				E('table', { 'class': 'table cbi-section-table' }, [
+					E('tr', { 'class': 'tr table-titles' }, [
+						E('td', { 'class': 'td cbi-value-field' }),
+						E('td', { 'class': 'td middle cbi-section-actions', 'width':'25%' },
+							E('div', {},
+								E('button', {
+									'class': 'cbi-button cbi-button-neutral fade-in',
+									'title': _('Change the mac and hostname of all wifinet'),
+									'click': ui.createHandlerFn(this, change_mac, 'all')
+								}, _('Pseudo all wifinet'))
+							)
+						)
+					]),
+					E('tr', { 'class': 'tr table-titles' },
+						E('td', { 'class': 'td cbi-value-field pseudo-output', 'colspan':'2', 'style': 'display:none' })
+					)
+				])
+			);
+
+			return E([ psbtns,nodes, E('div', { 'class': 'cbi-section' }, [
 				E('h3', _('Associated Stations')),
 				table
 			]) ]);
